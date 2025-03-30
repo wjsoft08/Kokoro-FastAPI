@@ -22,8 +22,8 @@ export class AudioService {
                 this.controller = null;
             }
             
-            this.controller = new AbortController();
             this.cleanup();
+            this.controller = new AbortController();
             onProgress?.(0, 1); // Reset progress to 0
             this.textLength = text.length;
             this.shouldAutoplay = document.getElementById('autoplay-toggle').checked;
@@ -93,13 +93,17 @@ export class AudioService {
             this.mediaSource.addEventListener('sourceopen', async () => {
                 try {
                     this.sourceBuffer = this.mediaSource.addSourceBuffer('audio/mpeg');
-                    this.sourceBuffer.mode = 'sequence';
-                    
-                    this.sourceBuffer.addEventListener('updateend', () => {
-                        this.processNextOperation();
-                    });
-                    
-                    await this.processStream(stream, response, onProgress, estimatedChunks);
+                    if (this.sourceBuffer) {
+                        this.sourceBuffer.mode = 'sequence';
+                        
+                        this.sourceBuffer.addEventListener('updateend', () => {
+                            this.processNextOperation();
+                        });
+                        
+                        await this.processStream(stream, response, onProgress, estimatedChunks);
+                    } else {
+                        reject(new Error('Failed to create source buffer'));
+                    }
                     resolve();
                 } catch (error) {
                     reject(error);
@@ -132,7 +136,7 @@ export class AudioService {
                             Object.keys(headers).join(', '));
                     }
 
-                    if (!this.sourceBuffer.updating && this.mediaSource.readyState === 'open') {
+                    if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource.readyState === 'open') {
                         this.mediaSource.endOfStream();
                     }
                     
@@ -141,7 +145,7 @@ export class AudioService {
                     this.dispatchEvent('complete');
                     
                     // Check if we should autoplay for small inputs that didn't trigger during streaming
-                    if (this.shouldAutoplay && !hasStartedPlaying && this.sourceBuffer.buffered.length > 0) {
+                    if (this.shouldAutoplay && !hasStartedPlaying && this.sourceBuffer && this.sourceBuffer.buffered.length > 0) {
                         setTimeout(() => this.play(), 100);
                     }
                     
@@ -162,7 +166,7 @@ export class AudioService {
                     }
 
                     // Only remove old data if we're hitting quota errors
-                    if (this.sourceBuffer.buffered.length > 0) {
+                    if (this.sourceBuffer && this.sourceBuffer.buffered.length > 0) {
                         const currentTime = this.audio.currentTime;
                         const start = this.sourceBuffer.buffered.start(0);
                         const end = this.sourceBuffer.buffered.end(0);
@@ -178,7 +182,7 @@ export class AudioService {
 
                     await this.appendChunk(value);
 
-                    if (!hasStartedPlaying && this.sourceBuffer.buffered.length > 0) {
+                    if (!hasStartedPlaying && this.sourceBuffer && this.sourceBuffer.buffered.length > 0) {
                         hasStartedPlaying = true;
                         if (this.shouldAutoplay) {
                             setTimeout(() => this.play(), 100);
@@ -187,7 +191,7 @@ export class AudioService {
                 } catch (error) {
                     if (error.name === 'QuotaExceededError') {
                         // If we hit quota, try more aggressive cleanup
-                        if (this.sourceBuffer.buffered.length > 0) {
+                        if (this.sourceBuffer && this.sourceBuffer.buffered.length > 0) {
                             const currentTime = this.audio.currentTime;
                             const start = this.sourceBuffer.buffered.start(0);
                             const removeEnd = Math.max(start, currentTime - 5);
@@ -223,14 +227,16 @@ export class AudioService {
         return new Promise((resolve) => {
             const doRemove = () => {
                 try {
-                    this.sourceBuffer.remove(start, end);
+                    if (this.sourceBuffer) {
+                        this.sourceBuffer.remove(start, end);
+                    }
                 } catch (e) {
                     console.warn('Error removing buffer:', e);
                 }
                 resolve();
             };
 
-            if (this.sourceBuffer.updating) {
+            if (this.sourceBuffer && this.sourceBuffer.updating) {
                 this.sourceBuffer.addEventListener('updateend', () => {
                     doRemove();
                 }, { once: true });
@@ -242,8 +248,8 @@ export class AudioService {
 
     async appendChunk(chunk) {
         // Don't append if audio is in error state
-        if (this.audio.error) {
-            console.warn('Skipping chunk append due to audio error');
+        if (this.audio.error || !this.sourceBuffer) {
+            console.warn('Skipping chunk append due to audio error or missing sourceBuffer');
             return;
         }
 
@@ -251,14 +257,14 @@ export class AudioService {
             const operation = { chunk, resolve, reject };
             this.pendingOperations.push(operation);
             
-            if (!this.sourceBuffer.updating) {
+            if (!this.sourceBuffer || !this.sourceBuffer.updating) {
                 this.processNextOperation();
             }
         });
     }
 
     processNextOperation() {
-        if (this.sourceBuffer.updating || this.pendingOperations.length === 0) {
+        if (!this.sourceBuffer || this.sourceBuffer.updating || this.pendingOperations.length === 0) {
             return;
         }
 
@@ -276,22 +282,26 @@ export class AudioService {
             // Set up event listeners
             const onUpdateEnd = () => {
                 operation.resolve();
-                this.sourceBuffer.removeEventListener("updateend", onUpdateEnd);
-                this.sourceBuffer.removeEventListener(
-                    "updateerror",
-                    onUpdateError
-                );
+                if (this.sourceBuffer) {
+                    this.sourceBuffer.removeEventListener("updateend", onUpdateEnd);
+                    this.sourceBuffer.removeEventListener(
+                        "updateerror",
+                        onUpdateError
+                    );
+                }
                 // Process the next operation
                 this.processNextOperation();
             };
 
             const onUpdateError = (event) => {
                 operation.reject(event);
-                this.sourceBuffer.removeEventListener("updateend", onUpdateEnd);
-                this.sourceBuffer.removeEventListener(
-                    "updateerror",
-                    onUpdateError
-                );
+                if (this.sourceBuffer) {
+                    this.sourceBuffer.removeEventListener("updateend", onUpdateEnd);
+                    this.sourceBuffer.removeEventListener(
+                        "updateerror",
+                        onUpdateError
+                    );
+                }
                 // Decide whether to continue processing
                 if (event.name !== "InvalidStateError") {
                     this.processNextOperation();
@@ -398,7 +408,7 @@ export class AudioService {
             this.audio = null;
         }
 
-        if (!this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
+        if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
             try {
                 this.mediaSource.endOfStream();
             } catch (e) {
@@ -429,7 +439,7 @@ export class AudioService {
             this.audio = null;
         }
 
-        if (!this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
+        if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
             try {
                 this.mediaSource.endOfStream();
             } catch (e) {
