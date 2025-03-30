@@ -132,7 +132,7 @@ export class AudioService {
                             Object.keys(headers).join(', '));
                     }
 
-                    if (this.mediaSource.readyState === 'open') {
+                    if (!this.sourceBuffer.updating && this.mediaSource.readyState === 'open') {
                         this.mediaSource.endOfStream();
                     }
                     
@@ -398,7 +398,7 @@ export class AudioService {
             this.audio = null;
         }
 
-        if (this.mediaSource && this.mediaSource.readyState === "open") {
+        if (!this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
             try {
                 this.mediaSource.endOfStream();
             } catch (e) {
@@ -429,7 +429,7 @@ export class AudioService {
             this.audio = null;
         }
 
-        if (this.mediaSource && this.mediaSource.readyState === "open") {
+        if (!this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === "open") {
             try {
                 this.mediaSource.endOfStream();
             } catch (e) {
